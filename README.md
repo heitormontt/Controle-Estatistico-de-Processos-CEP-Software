@@ -135,9 +135,3 @@ python cep.py resultados/calibracao.json --saida resultados_fase2/
 *(Para monitorar novos lotes, basta substituir o `"Data"` pelas novas amostras coletadas).*
 
 ---
-
-## 🧪 Testes Automatizados
-
-```bash
-python -m pytest tests/ -v
-```
