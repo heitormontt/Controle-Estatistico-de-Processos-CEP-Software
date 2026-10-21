@@ -15,7 +15,13 @@ if uploaded_file:
     try:
         conteudo_bytes = uploaded_file.read()
         dados = json.loads(conteudo_bytes.decode("utf-8-sig"))
-        ret = processar_cep(dados, source_file=uploaded_file.name)
+        
+        try:
+            ret = processar_cep(dados, source_file=uploaded_file.name)
+        except Exception as e:
+            st.error(f"Erro ao processar dados: {str(e)}")
+            st.stop()
+            
         res_calib = ret["resultado"]
         dados_parsed = res_calib["dados_parsed"]
         
@@ -99,7 +105,6 @@ if uploaded_file:
         with aba5:
             st.subheader("Downloads")
             
-            # Exportar JSON de acompanhamento (só faz sentido na calibração)
             if dados_parsed["Goal"] == "Calibrar":
                 conteudo_calib = montar_json_calibracao(ret, source_file=uploaded_file.name)
                 st.download_button(
@@ -110,7 +115,6 @@ if uploaded_file:
                 )
                 st.caption("ℹ️ Este arquivo contém os limites calibrados e os dados originais formatados para a Fase II (**Acompanhamento**).")
             
-            # Gerar PDF em memoria para download
             with tempfile.NamedTemporaryFile(suffix=".png", delete=False) as tmp_img:
                 img_path = tmp_img.name
             plotar_cartas(res_calib, dados_parsed, save_path=img_path)
@@ -136,7 +140,6 @@ if uploaded_file:
             with open(pdf_path, "rb") as pdf_file:
                 st.download_button("Baixar Relatório PDF", data=pdf_file, file_name="relatorio_cep.pdf", mime="application/pdf")
             
-            # Limpeza de temporarios
             try:
                 os.remove(img_path)
                 os.remove(pdf_path)
@@ -146,6 +149,6 @@ if uploaded_file:
                 pass
             
     except Exception as e:
-        st.error(f"Erro ao processar dados: {str(e)}")
+        st.error(f"Erro ao processar arquivo: {str(e)}")
 else:
     st.info("Por favor, carregue um arquivo JSON no menu lateral.")

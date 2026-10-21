@@ -19,128 +19,6 @@ def parse_numero(val):
         except: return None
     return None
 
-def normalizar_chaves(d):
-    mapa = {
-        "tipo": "Type", "type": "Type",
-        "objetivo": "Goal", "atividade": "Goal", "goal": "Goal",
-        "dados": "Data", "data": "Data",
-        "lse": "LSE", "lie": "LIE",
-        "rotulo": "Label", "label": "Label",
-        "unidade": "Unit", "unit": "Unit", "medido_em": "Measured_at", "measured_at": "Measured_at",
-        "criado_por": "Created_by", "created_by": "Created_by",
-        "lsc": "LSC", "lic": "LIC", "lc": "LC",
-        "delta0": "Delta0",
-        "calibration": "Calibration"
-    }
-    novo_d = {}
-    avisos = []
-    for k, v in d.items():
-        kn = k.lower().strip()
-        if kn in mapa: novo_d[mapa[kn]] = v
-        else: avisos.append(f"Chave desconhecida ignorada: {k}")
-    return novo_d, avisos
-
-def validar_e_converter_dados(d_norm):
-    avisos = []
-    
-    calib_info = d_norm.get("Calibration")
-    if isinstance(calib_info, dict) and calib_info.get("Data_is_original") is True:
-        avisos.append(
-            "Este arquivo veio de uma calibração e o 'Data' contém os dados ORIGINAIS dela "
-            "(inclusive os subgrupos removidos). Para monitorar o processo, substitua 'Data' "
-            "pelas novas amostras, mantendo a mesma estrutura."
-        )
-    
-    if "Type" not in d_norm or "Goal" not in d_norm or "Data" not in d_norm:
-        if "LSC" in d_norm and "Data" not in d_norm:
-            raise ValueError(
-                "O arquivo contém os limites calibrados (LSC/LIC/LC), mas não contém a chave 'Data'. "
-                "Para realizar a etapa de 'Acompanhar', inclua as novas amostras/subgrupos na chave 'Data': [[amostra 1], [amostra 2], ...]. "
-                "Se o seu objetivo era 'Calibrar', utilize o arquivo que contém os dados originais do processo."
-            )
-        faltantes = [campo for campo in ["Type", "Goal", "Data"] if campo not in d_norm]
-        raise ValueError(f"JSON deve conter Type, Goal e Data. Campos ausentes: {', '.join(faltantes)}.")
-        
-    tipo_bruto = str(d_norm["Type"]).upper().replace("-", "").replace(" ", "")
-    if tipo_bruto in ["XBAR", "XBARR", "XR", "X"]: tipo = "X"
-    elif tipo_bruto in ["IMR", "I"]: tipo = "IMR"
-    elif tipo_bruto in ["R", "P", "C"]: tipo = tipo_bruto
-    else: raise ValueError(f"Tipo desconhecido: {d_norm['Type']}")
-    
-    obj_bruto = str(d_norm["Goal"]).lower().strip()
-    if obj_bruto.startswith("calib"): goal = "Calibrar"
-    elif obj_bruto.startswith("acomp") or obj_bruto.startswith("monit") or obj_bruto.startswith("segu"): goal = "Acompanhar"
-    else: raise ValueError(f"Goal desconhecido: {d_norm['Goal']}")
-
-    raw_data = d_norm["Data"]
-    raw_data_original = copy.deepcopy(raw_data)
-    if not isinstance(raw_data, list) or len(raw_data) == 0:
-        raise ValueError("Data deve ser uma lista não vazia.")
-    
-    parsed_data = []
-    ns = []
-    for i, am_raw in enumerate(raw_data):
-        if not isinstance(am_raw, list): am_raw = [am_raw]
-        am_nums = [parse_numero(x) for x in am_raw]
-        if any(x is None for x in am_nums):
-            avisos.append(f"Subgrupo {i+1} contém valores não numéricos. Descartado.")
-            continue
-        
-        if tipo == "P":
-            if len(am_nums) == 2 and all(x >= 0 for x in am_nums) and am_nums[1] > 0 and am_nums[0] <= am_nums[1] and max(am_nums) > 1:
-                parsed_data.append([am_nums[0], am_nums[1]])
-                ns.append(am_nums[1])
-            else:
-                soma = sum(am_nums)
-                n_ = len(am_nums)
-                parsed_data.append([soma, n_])
-                ns.append(n_)
-                if any(x not in [0, 1] for x in am_nums):
-                    avisos.append(f"Subgrupo {i+1} ambíguo para P. Assumindo [x, n] = [{soma}, {n_}].")
-        elif tipo == "C":
-            soma = sum(am_nums)
-            parsed_data.append([soma])
-            ns.append(1)
-            if len(am_nums) > 1:
-                avisos.append(f"Subgrupo {i+1} tem múltiplos valores para C. Somados: {soma}.")
-        else:
-            parsed_data.append(am_nums)
-            ns.append(len(am_nums))
-            
-    if len(parsed_data) == 0: raise ValueError("Nenhum dado numérico válido encontrado.")
-    
-    if tipo in ["X", "R"]:
-        if any(n < 2 for n in ns):
-            raise ValueError("Cartas X e R exigem n >= 2 (se n=1, use IMR).")
-        if any(n > 25 for n in ns):
-            raise ValueError("n > 25 não suportado para X/R.")
-        if any(n > 10 for n in ns):
-            avisos.append("n > 10 detectado. Carta X-barra/S seria mais indicada do que X/R.")
-    
-    if tipo == "IMR":
-        parsed_data = [[x[0]] for x in parsed_data]
-        ns = [1] * len(parsed_data)
-        
-    if goal == "Calibrar" and len(parsed_data) < 2:
-        raise ValueError("Calibrar exige no mínimo 2 subgrupos válidos.")
-    if goal == "Calibrar" and len(parsed_data) < 20:
-        avisos.append(f"Temos {len(parsed_data)} subgrupos. O recomendado é 20 a 25.")
-        
-    if "LSE" in d_norm and "LIE" in d_norm:
-        if d_norm["LSE"] <= d_norm["LIE"]: raise ValueError("LSE deve ser maior que LIE.")
-
-    if goal == "Acompanhar":
-        if "LSC" not in d_norm or "LIC" not in d_norm:
-            raise ValueError("Acompanhar exige LSC e LIC já calibrados no JSON.")
-            
-    d_norm["Type"] = tipo
-    d_norm["Goal"] = goal
-    d_norm["Data"] = parsed_data
-    d_norm["raw_data_original"] = raw_data_original
-    d_norm["n_i"] = ns
-    d_norm["avisos"] = avisos
-    return d_norm
-
 def aplicar_regras(valores, LC, LSC, LIC, tipo_carta='X', removidos_idx=None):
     if removidos_idx is None: removidos_idx = set()
     sinais = {}
@@ -486,20 +364,77 @@ def processar_cep(json_str_or_dict, source_file=None):
     if isinstance(json_str_or_dict, str): d = json.loads(json_str_or_dict)
     else: d = json_str_or_dict
     
-    d_norm, avisos = normalizar_chaves(d)
-    dados_parsed = validar_e_converter_dados(d_norm)
-    if source_file:
-        dados_parsed["source_file"] = source_file
-    dados_parsed["avisos"].extend(avisos)
+    from cep_leitor import validar_json_web, FamiliaCarta
+    res_leitura = validar_json_web(d)
     
+    if res_leitura.erros:
+        raise ValueError("Erros de validação: " + " | ".join(res_leitura.erros))
+        
+    conj = res_leitura.dados
+    
+    if conj.familia == FamiliaCarta.XBAR_R: tipo_core = "X"
+    elif conj.familia == FamiliaCarta.I_MR: tipo_core = "IMR"
+    elif conj.familia == FamiliaCarta.P: tipo_core = "P"
+    else: tipo_core = "X"
+    
+    parsed_data = []
+    ns = []
+    if conj.familia == FamiliaCarta.XBAR_R:
+        parsed_data = conj.subgrupos
+        ns = [conj.tamanho_subgrupo] * len(conj.subgrupos)
+    elif conj.familia == FamiliaCarta.I_MR:
+        parsed_data = [[x] for x in conj.valores]
+        ns = [1] * len(conj.valores)
+    elif conj.familia == FamiliaCarta.P:
+        # A engine antiga para P exige [[defeituosos, tamanho], ...]
+        for n_val, d_val in zip(conj.tamanhos_amostra, conj.defeituosos):
+            parsed_data.append([d_val, n_val])
+            ns.append(n_val)
+            
+    goal = conj.objetivo or "Calibrar"
+    goal_lower = goal.lower().strip()
+    if goal_lower.startswith("acomp") or goal_lower.startswith("monit") or goal_lower.startswith("segu"):
+        goal = "Acompanhar"
+    else:
+        goal = "Calibrar"
+        
+    dados_parsed = {
+        "Type": tipo_core,
+        "Goal": goal,
+        "Data": parsed_data,
+        "n_i": ns,
+        "raw_data_original": d.get("Data", []),
+        "LSE": conj.lse,
+        "LIE": conj.lie,
+        "Label": d.get("Label", ""),
+        "Unit": conj.unidade or "",
+        "Measured_at": d.get("Measured_at", ""),
+        "Created_by": conj.criado_por or "",
+        "avisos": res_leitura.avisos,
+        "source_file": source_file,
+        "Delta0": conj.extras.get("Delta0")
+    }
+    
+    # Repassando os limites calibrados se existirem para Fase II
+    for lim_key in ["LSC", "LIC", "LC", "Calibration"]:
+        if lim_key in d: dados_parsed[lim_key] = d[lim_key]
+        
+    if dados_parsed["Goal"] == "Acompanhar":
+        if "LSC" not in dados_parsed or "LIC" not in dados_parsed:
+            # Em vez de dar crash, vamos ser inteligentes: se não tem limites, forçamos a Calibrar e avisamos.
+            dados_parsed["Goal"] = "Calibrar"
+            dados_parsed["avisos"].append(
+                "O objetivo estava como 'Acompanhar/Monitorar', mas o JSON não possuía LSC e LIC. "
+                "O software alterou automaticamente para 'Calibrar' (Fase I)."
+            )
+
     if dados_parsed["Goal"] == "Calibrar":
         res_calib = calibrar(dados_parsed)
     else:
-        # Acompanhar
+        # Acompanhar - A logica do acompanhar era INLINE no else da engine original
         prm = {}
         tipo = dados_parsed["Type"]
         
-        # Extrair LSC/LIC/LC do JSON
         def get_lim(chave, carta, fallback=None):
             val = dados_parsed.get(chave)
             if isinstance(val, dict):
@@ -513,14 +448,13 @@ def processar_cep(json_str_or_dict, source_file=None):
         prm["LIC_X"] = get_lim("LIC", carta_1, fallback="X")
         prm["LC_X"] = get_lim("LC", carta_1, fallback="X")
         
-        # Limites da carta secundária (só para X/R e IMR)
         if tipo in ["X", "R", "IMR"]:
             carta_2 = "R" if tipo != "IMR" else "AM"
             prm["LSC_R"] = get_lim("LSC", carta_2, fallback="R" if tipo == "IMR" else "AM")
             prm["LIC_R"] = get_lim("LIC", carta_2, fallback="R" if tipo == "IMR" else "AM")
             prm["LC_R"] = get_lim("LC", carta_2, fallback="R" if tipo == "IMR" else "AM")
         
-        n_mean = int(np.round(np.mean(dados_parsed["n_i"])))
+        n_mean = int(np.round(np.mean(dados_parsed["n_i"]))) if dados_parsed["n_i"] else 1
         n_mean = max(2, min(n_mean, 25))
         
         if tipo in ["X", "R"]:
@@ -541,15 +475,12 @@ def processar_cep(json_str_or_dict, source_file=None):
             elif prm.get("LSC_R") is not None:
                 prm["Rbar"] = prm["LSC_R"] / 3.267
                 prm["sigma_hat"] = prm["Rbar"] / 1.128
-        elif tipo == "P":
-            if prm["LC_X"] is None and prm["LSC_X"] is not None and prm["LIC_X"] is not None:
-                prm["LC_X"] = (prm["LSC_X"] + prm["LIC_X"])/2
-        elif tipo == "C":
+        elif tipo in ["P", "C"]:
             if prm["LC_X"] is None and prm["LSC_X"] is not None and prm["LIC_X"] is not None:
                 prm["LC_X"] = (prm["LSC_X"] + prm["LIC_X"])/2
 
         limites = calcular_limites(tipo, dados_parsed["Data"], dados_parsed["n_i"], set(), prm=prm)
-        sinais_1 = aplicar_regras(limites["val_1"], limites["LC_1"], limites["LSC_1"], limites["LIC_1"], tipo_carta='X' if tipo != 'P' and tipo != 'C' else tipo)
+        sinais_1 = aplicar_regras(limites["val_1"], limites["LC_1"], limites["LSC_1"], limites["LIC_1"], tipo_carta='X' if tipo not in ['P', 'C'] else tipo)
         if tipo in ["X", "R", "IMR"]:
              sinais_2 = aplicar_regras(limites["val_2"], limites["LC_2"], limites["LSC_2"], limites["LIC_2"], tipo_carta='R' if tipo != 'IMR' else 'AM')
         else: sinais_2 = {}
@@ -573,20 +504,13 @@ def processar_cep(json_str_or_dict, source_file=None):
     }
 
 def to_native(val):
-    if val is None:
-        return None
-    if isinstance(val, (np.floating, float)):
-        return float(val)
-    if isinstance(val, (np.integer, int)):
-        return int(val)
-    if isinstance(val, (np.bool_, bool)):
-        return bool(val)
-    if isinstance(val, np.ndarray):
-        return [to_native(x) for x in val.tolist()]
-    if isinstance(val, (list, tuple)):
-        return [to_native(x) for x in val]
-    if isinstance(val, dict):
-        return {str(k): to_native(v) for k, v in val.items()}
+    if val is None: return None
+    if isinstance(val, (np.floating, float)): return float(val)
+    if isinstance(val, (np.integer, int)): return int(val)
+    if isinstance(val, (np.bool_, bool)): return bool(val)
+    if isinstance(val, np.ndarray): return [to_native(x) for x in val.tolist()]
+    if isinstance(val, (list, tuple)): return [to_native(x) for x in val]
+    if isinstance(val, dict): return {str(k): to_native(v) for k, v in val.items()}
     return val
 
 def formatar_bloco_data(data):
